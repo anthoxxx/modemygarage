@@ -2,9 +2,8 @@
 // P (or Esc / power button) = open/close
 // Apps: "Parts" (buy, part spawns in front of you) and "Sell car" (15 s wait, then an offer)
 //
-// NOT COMPILED/TESTED against the game. Class names (tools, Partinfo, PartManager,
-// FPS_AIO, ModUtils) come from the open-source ModUtils code. Check them in dnSpy
-// against your Assembly-CSharp.dll if the build complains.
+// Built against the game's Assembly-CSharp.dll. No other mod is required
+// (no SimplePartLoader dependency).
 // The look is drawn in code (rounded textures generated at runtime), no asset needed.
 
 using System;
@@ -14,7 +13,6 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using UnityEngine;
-using SimplePartLoader;
 
 namespace PhoneMod
 {
@@ -111,6 +109,92 @@ namespace PhoneMod
         int wallIdx;
         Vector2 wallScroll;
 
+        // game references (found once, cached)
+        GameObject player;
+        FirstPersonAIO playerAIO;
+        Component cashSource;
+        object cashClip;
+        MethodInfo playOneShot;
+
+        bool FindPlayer()
+        {
+            if (player != null && playerAIO != null) return true;
+            player = GameObject.Find("Player");
+            if (player == null) return false;
+            playerAIO = player.GetComponent<FirstPersonAIO>();
+
+            // cash sound = the same one the game plays in shops (hand -> AudioManager.Cash)
+            GameObject hand = GameObject.Find("hand");
+            if (hand != null)
+            {
+                AudioManager am = hand.GetComponent<AudioManager>();
+                cashSource = hand.GetComponent("AudioSource");
+                if (am != null && cashSource != null)
+                {
+                    FieldInfo f = typeof(AudioManager).GetField("Cash");
+                    cashClip = f != null ? f.GetValue(am) : null;
+                    if (cashClip != null)
+                        playOneShot = cashSource.GetType().GetMethod("PlayOneShot", new Type[] { cashClip.GetType() });
+                }
+            }
+            return playerAIO != null;
+        }
+
+        void PlayCashSound()
+        {
+            try { if (playOneShot != null && cashSource != null) playOneShot.Invoke(cashSource, new object[] { cashClip }); } catch { }
+        }
+
+        // true when the player is sitting in a car (same check as SimplePartLoader)
+        bool PlayerInCar()
+        {
+            return FindPlayer() && player.transform.parent != null &&
+                   player.transform.root.GetComponent<MainCarProperties>() != null;
+        }
+
+        // every buyable car part of the game (same list SimplePartLoader builds)
+        static List<GameObject> GetGameParts()
+        {
+            List<GameObject> parts = new List<GameObject>();
+            GameObject pp = GameObject.Find("PartsParent");
+            JunkPartsList jpl = pp != null ? pp.GetComponent<JunkPartsList>() : null;
+            if (jpl != null && jpl.Parts != null)
+            {
+                foreach (GameObject part in jpl.Parts)
+                {
+                    if (part == null) continue;
+                    if (part.tag != "Item") parts.Add(part);
+                    else
+                    {
+                        PickupTool pt = part.GetComponent<PickupTool>();
+                        if (pt != null && pt.Box && pt.InBoxprefab != null) parts.Add(pt.InBoxprefab);
+                    }
+                }
+            }
+            GameObject shopItems = GameObject.Find("SHOPITEMS");
+            if (shopItems != null)
+            {
+                foreach (SaleItem si in shopItems.GetComponentsInChildren<SaleItem>(true))
+                    if (si.Item != null && si.Item.GetComponent<CarProperties>() != null && !parts.Contains(si.Item))
+                        parts.Add(si.Item);
+            }
+            return parts;
+        }
+
+        // Texture2D.LoadImage lives in UnityEngine.ImageConversionModule: called by reflection
+        static MethodInfo loadImage;
+        static bool LoadImage(Texture2D t, byte[] data)
+        {
+            if (loadImage == null)
+            {
+                Type ic = Type.GetType("UnityEngine.ImageConversion, UnityEngine.ImageConversionModule");
+                if (ic == null) return false;
+                loadImage = ic.GetMethod("LoadImage", new Type[] { typeof(Texture2D), typeof(byte[]) });
+                if (loadImage == null) return false;
+            }
+            return (bool)loadImage.Invoke(null, new object[] { t, data });
+        }
+
         // gui helpers
         static readonly Dictionary<string, Texture2D> texCache = new Dictionary<string, Texture2D>();
         GUIStyle lbl, btn, field;
@@ -175,7 +259,7 @@ namespace PhoneMod
                 try
                 {
                     src = new Texture2D(2, 2, TextureFormat.RGBA32, false);
-                    src.LoadImage(wi.Data != null ? wi.Data : File.ReadAllBytes(wi.File));
+                    if (!LoadImage(src, wi.Data != null ? wi.Data : File.ReadAllBytes(wi.File))) { Destroy(src); src = null; }
                 }
                 catch { src = null; }
             }
@@ -256,9 +340,10 @@ namespace PhoneMod
 
         void OpenPhone()
         {
+            if (!FindPlayer()) return;
             page = Page.Home;
-            pausedByPhone = !FPS_AIO.controllerPauseState;
-            if (pausedByPhone) FPS_AIO.ControllerPause();
+            pausedByPhone = !playerAIO.controllerPauseState;
+            if (pausedByPhone) playerAIO.ControllerPause();
             Cursor.lockState = CursorLockMode.None;
             Cursor.visible = true;
         }
@@ -270,7 +355,7 @@ namespace PhoneMod
             GUI.FocusControl(null);
             if (!pausedByPhone) return; // another menu was already open: leave it as it was
             pausedByPhone = false;
-            if (FPS_AIO.controllerPauseState) FPS_AIO.ControllerUnPause();
+            if (playerAIO != null && playerAIO.controllerPauseState) playerAIO.ControllerUnPause();
             Cursor.lockState = CursorLockMode.Locked;
             Cursor.visible = false;
         }
@@ -523,7 +608,7 @@ namespace PhoneMod
             tools.money -= dollars;
             btcHeld = Mathf.Round((btcHeld + qty) * 10000f) / 10000f;
             SaveBtc();
-            ModUtils.PlayCashSound();
+            PlayCashSound();
             Toast("Bitcoin", "Bought " + qty.ToString("0.0000", CultureInfo.InvariantCulture) + " BTC", 2.5f);
         }
 
@@ -536,7 +621,7 @@ namespace PhoneMod
             tools.money += gain;
             btcHeld = fraction >= 1f ? 0f : Mathf.Round((btcHeld - qty) * 10000f) / 10000f;
             SaveBtc();
-            ModUtils.PlayCashSound();
+            PlayCashSound();
             Toast("Bitcoin", "Sold " + qty.ToString("0.0000", CultureInfo.InvariantCulture) + " BTC for $" + gain.ToString("N0"), 3f);
         }
 
@@ -696,8 +781,7 @@ namespace PhoneMod
         {
             if (shop != null && shop.Count > 0) return;
             shop = new List<ShopItem>();
-            if (PartManager.gameParts == null) return;
-            foreach (GameObject part in PartManager.gameParts)
+            foreach (GameObject part in GetGameParts())
             {
                 if (part == null) continue;
                 Partinfo info = part.GetComponent<Partinfo>();
@@ -752,7 +836,7 @@ namespace PhoneMod
             spawnSpot.transform.rotation = Quaternion.identity;
 
             tools.money -= item.Price;
-            ModUtils.PlayCashSound();
+            PlayCashSound();
 
             tools.SpawnSpot = spawnSpot; // the game spawns the part here
             item.Info.SpawnThis();
@@ -773,7 +857,7 @@ namespace PhoneMod
                     Text(new Rect(card.x, card.y + 82f, card.width, 24f), "A buyer answers in " + OfferDelay + " s", 13, Muted, TextAnchor.MiddleCenter);
                     if (Button(new Rect(card.x + 24f, card.yMax - 80f, card.width - 48f, 50f), "Find buyers", Blue, BlueHov, 16))
                     {
-                        if (ModUtils.CurrentPlayerCar != null) { Toast("Sell car", "Get out of the car first", 2.5f); break; }
+                        if (PlayerInCar()) { Toast("Sell car", "Get out of the car first", 2.5f); break; }
                         targetCar = FindNearestCar();
                         if (targetCar == null) { Toast("Sell car", "No car nearby", 2.5f); break; }
                         offerAt = Time.time + OfferDelay;
@@ -838,7 +922,7 @@ namespace PhoneMod
         void AcceptOffer()
         {
             if (targetCar == null) { Toast("Sell car", "The car is gone", 2.5f); sellState = SellState.Idle; return; }
-            if (ModUtils.CurrentPlayerCar != null) { Toast("Sell car", "Get out of the car first", 2.5f); return; }
+            if (PlayerInCar()) { Toast("Sell car", "Get out of the car first", 2.5f); return; }
             if (Vector3.Distance(Camera.main.transform.position, targetCar.transform.position) > MaxCarDistance + 5f)
             {
                 Toast("Sell car", "The car is too far away", 2.5f);
@@ -848,7 +932,7 @@ namespace PhoneMod
             }
 
             tools.money += offerValue;
-            ModUtils.PlayCashSound();
+            PlayCashSound();
             Destroy(targetCar);
             targetCar = null;
             sellState = SellState.Idle;

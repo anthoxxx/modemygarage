@@ -66,7 +66,16 @@ namespace MonMod
   Les pièces de voiture utilisent `Pickup`, pas `MooveItem`.
 - **Météo / temps** (Enviro) : `EnviroSkyMgr.instance.ChangeSeason(EnviroSeasons.Seasons.Autumn)`,
   `EnviroSkyMgr.instance.ChangeWeather(8)`, `EnviroSky.instance.ChangeWeather(1)`.
+- **Pause du joueur** : `FirstPersonAIO` (composant d'instance sur `Player`, pas statique) :
+  `controllerPauseState`, `ControllerPause()`, `ControllerUnPause()`.
+- **Liste des pièces** : `PartsParent` → `JunkPartsList.Parts` (+ `SHOPITEMS` → `SaleItem.Item`) ;
+  achat = `tools.SpawnSpot = go; partinfo.SpawnThis();`. Son caisse : `hand` → `AudioManager.Cash` + `AudioSource`.
 - **Adhérence** : tag du GameObject sous la roue — `Road`, `DirtRoad` (salit la voiture), `TRACK` (glissant).
+
+## Compiler ici (Linux, sans Visual Studio)
+`mcs` (paquet `mono-mcs`) avec `-nostdlib` et les dll du dossier `Managed` du jeu fournies par l'utilisateur
+(Assembly-CSharp, mscorlib, netstandard, UnityEngine*.dll) ; `System.Core` depuis `/usr/lib/mono/4.7.1-api`.
+Ne jamais commiter les dll du jeu (propriétaires) — seulement la dll du mod.
 
 ## AssetBundles (modèles custom)
 1. Unity 2020.3 : dossiers `Editor` + `Assets`, script éditeur :
