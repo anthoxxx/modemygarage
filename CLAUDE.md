@@ -76,6 +76,9 @@ namespace MonMod
 `mcs` (paquet `mono-mcs`) avec `-nostdlib` et les dll du dossier `Managed` du jeu fournies par l'utilisateur
 (Assembly-CSharp, mscorlib, netstandard, UnityEngine*.dll) ; `System.Core` depuis `/usr/lib/mono/4.7.1-api`.
 Ne jamais commiter les dll du jeu (propriétaires) — seulement la dll du mod.
+Modules utilisés par PhoneMod : CoreModule, IMGUIModule, PhysicsModule, TextRenderingModule, InputLegacyModule
+(si un module manque, un stub de référence avec les mêmes signatures publiques suffit pour compiler).
+`UnityEngine.UI` non référencé → les champs de type `UnityEngine.UI.Text` du jeu sont modifiés par réflexion.
 
 ## AssetBundles (modèles custom)
 1. Unity 2020.3 : dossiers `Editor` + `Assets`, script éditeur :

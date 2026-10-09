@@ -729,7 +729,7 @@ namespace PhoneMod
                 if (cp.Cluster && !mcp.Bike)
                 {
                     cp.ClusterMileage = mcp.Mileage;
-                    if (cp.MileageText != null) cp.MileageText.text = cp.ClusterMileage.ToString("F0");
+                    SetUiText(cp, "MileageText", cp.ClusterMileage.ToString("F0"));
                 }
 
                 cp.Condition = UnityEngine.Random.Range(0.01f, 1f);
@@ -797,6 +797,16 @@ namespace PhoneMod
             foreach (CarProperties cp in car.GetComponentsInChildren<CarProperties>())
                 if (cp.SinglePart) { sum += cp.Condition; count++; }
             mcp.CarPriceStart = count > 0 ? mcp.CarPrice * (sum / count) : 250f;
+        }
+
+        // CarProperties.MileageText is a UnityEngine.UI.Text: set by reflection (UnityEngine.UI not referenced)
+        static void SetUiText(object owner, string fieldName, string value)
+        {
+            FieldInfo f = owner.GetType().GetField(fieldName);
+            object ui = f != null ? f.GetValue(owner) : null;
+            if (ui == null || (ui is UnityEngine.Object && !(UnityEngine.Object)ui)) return;
+            PropertyInfo t = ui.GetType().GetProperty("text");
+            if (t != null) t.SetValue(ui, value, null);
         }
 
         // ------------------------------------------------------------ MOD APP (noclip / money / save)
