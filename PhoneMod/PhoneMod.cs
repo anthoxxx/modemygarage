@@ -1,6 +1,6 @@
 // PhoneMod for My Garage - Samsung S23 style phone
 // P (or Esc / power button) = open/close
-// Apps: "Parts" (buy, part spawns in front of you) and "Sell car" (15 s wait, then an offer)
+// Apps: Parts, Sell car, Bitcoin, Calculator, Wallpaper, Mod (noclip / money / quick save), Vehicles
 //
 // Built against the game's Assembly-CSharp.dll. No other mod is required
 // (no SimplePartLoader dependency).
@@ -37,7 +37,7 @@ namespace PhoneMod
 
     public class PhoneUI : MonoBehaviour
     {
-        enum Page { Closed, Home, Shop, Sell, Wallpaper, Bitcoin, Calc }
+        enum Page { Closed, Home, Shop, Sell, Wallpaper, Bitcoin, Calc, Cheats, Vehicles }
         enum SellState { Idle, Waiting, Offer }
 
         // ---- settings ----
@@ -66,7 +66,6 @@ namespace PhoneMod
         static readonly Color Muted   = new Color32(160, 160, 170, 255);
 
         Page page = Page.Closed;
-        bool pausedByPhone;
 
         // shop
         class ShopItem { public string Name; public float Price; public Partinfo Info; }
@@ -75,6 +74,7 @@ namespace PhoneMod
         Vector2 scroll;
         GameObject spawnSpot;
         bool typing;
+        bool pausedByPhone;
 
         // sell
         SellState sellState = SellState.Idle;
@@ -88,6 +88,21 @@ namespace PhoneMod
         // bitcoin
         float btcPrice, btcPrev, btcHeld, nextBtcAt;
         readonly List<float> btcHist = new List<float>();
+
+        // vehicle spawner
+        class CarItem { public string Name; public GameObject Prefab; }
+        List<CarItem> cars;
+        string carSearch = "";
+        Vector2 carScroll;
+        bool carStock;   // false = junkyard-style car (like ModUtils emulator), true = complete stock car
+
+        // mod app (noclip / money / quick save)
+        bool noclip;
+        Transform ncPlayer;
+        Rigidbody ncRb;
+        bool ncGravity, ncKinematic;
+        readonly List<Collider> ncCols = new List<Collider>();
+        string lastSave = "";
 
         // calculator
         string calcDisp = "0", calcExpr = "";
@@ -308,6 +323,28 @@ namespace PhoneMod
         // ------------------------------------------------------------ logic
         void Update()
         {
+            // noclip: free flight (WASD + Space up + Ctrl down, Shift = fast)
+            if (noclip)
+            {
+                if (ncPlayer == null) { noclip = false; ncCols.Clear(); }
+                else if (page == Page.Closed && Camera.main != null)
+                {
+                    Transform cam = Camera.main.transform;
+                    Vector3 d = Vector3.zero;
+                    if (Input.GetKey(KeyCode.W)) d += cam.forward;
+                    if (Input.GetKey(KeyCode.S)) d -= cam.forward;
+                    if (Input.GetKey(KeyCode.D)) d += cam.right;
+                    if (Input.GetKey(KeyCode.A)) d -= cam.right;
+                    if (Input.GetKey(KeyCode.Space)) d += Vector3.up;
+                    if (Input.GetKey(KeyCode.LeftControl)) d -= Vector3.up;
+                    if (d.sqrMagnitude > 0f)
+                    {
+                        float speed = Input.GetKey(KeyCode.LeftShift) ? 18f : 6f;
+                        ncPlayer.position += d.normalized * speed * Time.deltaTime;
+                    }
+                }
+            }
+
             // new bitcoin price every 60 s, even with the phone closed
             if (Time.time >= nextBtcAt)
             {
@@ -462,6 +499,13 @@ namespace PhoneMod
                 Text(new Rect(nb.x + 16, nb.y + 28, nb.width - 32, 24), toastText, 14, Color.white, TextAnchor.MiddleLeft);
             }
 
+            if (noclip && page == Page.Closed)
+            {
+                Rect nc = new Rect(16f, 16f, 130f, 30f);
+                Round(nc, 15f, new Color(0.12f, 0.12f, 0.14f, 0.9f));
+                Text(nc, "NOCLIP ON", 13, Green, TextAnchor.MiddleCenter, FontStyle.Bold);
+            }
+
             if (page == Page.Closed) return;
 
             Rect phone = new Rect(w / 2f - PW / 2f, h / 2f - PH / 2f, PW, PH);
@@ -501,6 +545,8 @@ namespace PhoneMod
                 case Page.Wallpaper: DrawWallpapers(scr); break;
                 case Page.Bitcoin: DrawBitcoin(scr); break;
                 case Page.Calc: DrawCalc(scr); break;
+                case Page.Cheats: DrawCheats(scr); break;
+                case Page.Vehicles: DrawVehicles(scr); break;
             }
 
             // gesture pill (tap = go home)
@@ -529,6 +575,8 @@ namespace PhoneMod
             DrawAppIcon(new Rect(x0 + (iw + gap), y1, iw, iw), "$", "Sell car", Green, () => { page = Page.Sell; }, ht);
             DrawAppIcon(new Rect(x0 + 2f * (iw + gap), y1, iw, iw), "B", "Bitcoin", new Color32(247, 147, 26, 255), () => { page = Page.Bitcoin; }, ht);
             DrawAppIcon(new Rect(x0 + 3f * (iw + gap), y1, iw, iw), "=", "Calculator", new Color32(20, 184, 166, 255), () => { page = Page.Calc; }, ht);
+            DrawAppIcon(new Rect(x0 + (iw + gap), y2, iw, iw), "M", "Mod", new Color32(244, 63, 94, 255), () => { page = Page.Cheats; }, ht);
+            DrawAppIcon(new Rect(x0 + 2f * (iw + gap), y2, iw, iw), "V", "Vehicles", new Color32(234, 179, 8, 255), () => { cars = null; BuildCars(); page = Page.Vehicles; }, ht);
             DrawAppIcon(new Rect(x0, y2, iw, iw), "W", "Wallpaper", new Color32(139, 92, 246, 255), () => { page = Page.Wallpaper; }, ht);
         }
 
@@ -547,6 +595,320 @@ namespace PhoneMod
             Rect pill = new Rect(scr.xMax - 142f, scr.y + 50f, 120f, 30f);
             Round(pill, 15f, Card);
             Text(pill, "$ " + tools.money.ToString("N0"), 14, Color.white, TextAnchor.MiddleCenter, FontStyle.Bold);
+        }
+
+        // ------------------------------------------------------------ VEHICLES APP
+        void BuildCars()
+        {
+            if (cars != null) return;
+            cars = new List<CarItem>();
+
+            // The game's car list. Cars added by other mods (ModUtils car generator) are in this list too.
+            GameObject parent = GameObject.Find("CarsParent");
+            CarList list = parent != null ? parent.GetComponent<CarList>() : null;
+            if (list == null || list.Cars == null) return;
+
+            foreach (GameObject go in list.Cars)
+            {
+                if (go == null) continue;
+                MainCarProperties mcp = go.GetComponent<MainCarProperties>();
+                string n = (mcp != null && !string.IsNullOrEmpty(mcp.CarName)) ? mcp.CarName : go.name;
+                cars.Add(new CarItem { Name = n, Prefab = go });
+            }
+            cars = cars.OrderBy(c => c.Name).ToList();
+        }
+
+        void DrawVehicles(Rect scr)
+        {
+            DrawAppBar(scr, "Vehicles");
+
+            // mode switch: junkyard / stock
+            float half = (scr.width - 40f - 8f) / 2f;
+            Color off = new Color32(58, 58, 64, 255);
+            if (Button(new Rect(scr.x + 20f, scr.y + 92f, half, 36f), "Junkyard", carStock ? off : Blue, carStock ? (Color)new Color32(80, 80, 88, 255) : BlueHov, 13)) carStock = false;
+            if (Button(new Rect(scr.x + 28f + half, scr.y + 92f, half, 36f), "Stock", carStock ? Blue : off, carStock ? BlueHov : (Color)new Color32(80, 80, 88, 255), 13)) carStock = true;
+
+            GUI.SetNextControlName("carsearch");
+            carSearch = GUI.TextField(new Rect(scr.x + 20f, scr.y + 138f, scr.width - 40f, 40f), carSearch, field);
+            typing = GUI.GetNameOfFocusedControl() == "carsearch";
+
+            string q = (carSearch ?? "").ToLowerInvariant();
+            List<CarItem> list = cars.Where(c => q.Length == 0 || c.Name.ToLowerInvariant().Contains(q)).ToList();
+
+            Rect view = new Rect(scr.x + 16f, scr.y + 190f, scr.width - 32f, scr.height - 190f - 40f);
+            Rect content = new Rect(0f, 0f, view.width - 6f, Mathf.Max(view.height, list.Count * 64f));
+            if (cars.Count == 0)
+                Text(new Rect(view.x, view.y + 20f, view.width, 40f), "No cars found (open the app in the garage)", 13, Muted, TextAnchor.MiddleCenter);
+
+            carScroll = GUI.BeginScrollView(view, carScroll, content, false, false, GUIStyle.none, GUIStyle.none);
+            for (int i = 0; i < list.Count; i++)
+            {
+                Rect row = new Rect(0f, i * 64f, content.width, 56f);
+                Round(row, 18f, Card);
+                Text(new Rect(row.x + 16f, row.y, row.width - 110f, row.height), list[i].Name, 14, Color.white, TextAnchor.MiddleLeft);
+                if (Button(new Rect(row.xMax - 90f, row.y + 11f, 80f, 34f), "Spawn", Green, new Color32(74, 222, 128, 255), 13))
+                    SpawnCar(list[i]);
+            }
+            GUI.EndScrollView();
+        }
+
+        void SpawnCar(CarItem item)
+        {
+            if (item.Prefab == null || Camera.main == null) return;
+            try
+            {
+                Transform cam = Camera.main.transform;
+
+                // 7 m in front of you, dropped on the ground
+                Vector3 pos = cam.position + cam.forward * 7f;
+                RaycastHit hit;
+                // start the ray just above eye level so a garage ceiling is not taken as the ground
+                if (Physics.Raycast(pos + Vector3.up * 2f, Vector3.down, out hit, 40f)) pos.y = hit.point.y + 1.2f;
+                Quaternion rot = Quaternion.Euler(0f, cam.eulerAngles.y, 0f);
+
+                GameObject car = Instantiate(item.Prefab, pos, rot);
+                car.name = item.Prefab.name;
+
+                if (!carStock)
+                {
+                    // junkyard-style setup, done a few frames later like the ModUtils emulator.
+                    // (SPL's EmulatorComponent is not used: it destroys its own GameObject at the end,
+                    // i.e. the car itself, and it needs SimplePartLoader.)
+                    StartCoroutine(JunkCarSetup(car));
+                }
+                else
+                {
+                    // same call ModUtils uses in its report code to build a stock car
+                    MainCarProperties mcp = car.GetComponent<MainCarProperties>();
+                    if (mcp != null)
+                    {
+                        mcp.SpawnPoint = pos;
+                        mcp.CreatingStock(0);
+                    }
+                }
+                Toast("Vehicles", "Spawned: " + item.Name, 2.5f);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError("[PhoneMod] Spawn car failed: " + ex);
+                Toast("Vehicles", "Spawn failed (see log)", 3f);
+            }
+        }
+
+        System.Collections.IEnumerator JunkCarSetup(GameObject car)
+        {
+            yield return null;
+            yield return null;
+            yield return null;
+            if (car == null) yield break;
+            try { SetupJunkCar(car); }
+            catch (Exception ex) { Debug.LogError("[PhoneMod] Junk car setup failed: " + ex); }
+        }
+
+        // Simplified copy of SimplePartLoader's junkyard emulator (without the PaintIn3D part)
+        static void SetupJunkCar(GameObject car)
+        {
+            MainCarProperties mcp = car.GetComponent<MainCarProperties>();
+            if (mcp == null) return;
+
+            mcp.Mileage = UnityEngine.Random.Range(1, 900000);
+            mcp.Color = UnityEngine.Random.ColorHSV();
+            mcp.StartOptions = UnityEngine.Random.Range(1000000000, 1999999999);
+            mcp.SetCarOptions();
+
+            GameObject plates = GameObject.Find("NumberPlates");
+            if (plates != null)
+            {
+                mcp.NumberParent = plates.GetComponent<NumberPlateManager>();
+                if (mcp.NumberParent != null) mcp.NumberParent.CreateRandomNumber();
+            }
+            mcp.OriginalColor = mcp.OriginalInterior >= 2 ? mcp.Color : UnityEngine.Random.ColorHSV();
+
+            foreach (CarProperties cp in car.GetComponentsInChildren<CarProperties>())
+            {
+                if (cp.Cluster && !mcp.Bike)
+                {
+                    cp.ClusterMileage = mcp.Mileage;
+                    if (cp.MileageText != null) cp.MileageText.text = cp.ClusterMileage.ToString("F0");
+                }
+
+                cp.Condition = UnityEngine.Random.Range(0.01f, 1f);
+                if (cp.EngineOil != null) cp.EngineOil.Condition = UnityEngine.Random.Range(0.01f, 0.5f);
+
+                Renderer r = cp.GetComponent<Renderer>();
+                if (cp.Washable && r != null && mcp.DirtyMaterial != null)
+                {
+                    Material[] m = r.materials;
+                    if (m.Length > 1) { m[1] = mcp.DirtyMaterial; r.materials = m; }
+                }
+
+                if (cp.Tire)
+                {
+                    if (cp.Condition < 0.1f) cp.PartIsOld = true;
+                    cp.TirePressure = Mathf.Min(UnityEngine.Random.Range(0.1f, 4f), 2f);
+                }
+
+                if (cp.Interior) cp.OriginalInterior = mcp.OriginalInterior;
+
+                if (cp.NumberPlate && r != null && mcp.NumberParent != null)
+                {
+                    Material[] m = r.materials;
+                    if (m.Length > 7)
+                    {
+                        NumberPlateManager n = mcp.NumberParent;
+                        m[2] = n.M1; m[3] = n.M2; m[4] = n.M3; m[5] = n.M4; m[6] = n.M5; m[7] = n.M6;
+                        r.materials = m;
+                        cp.One = n.M1; cp.Two = n.M2; cp.Three = n.M3; cp.Four = n.M4; cp.Five = n.M5; cp.Six = n.M6;
+                    }
+                }
+            }
+
+            // remove some parts, like the junkyard does (JunkSpawnChance)
+            foreach (CarProperties cp in car.GetComponentsInChildren<CarProperties>())
+            {
+                if (!cp.SinglePart) continue;
+                bool remove = cp.JunkSpawnChance == 1 ||
+                              (cp.JunkSpawnChance == 2 && cp.Condition >= 0.6f) ||
+                              (cp.JunkSpawnChance == 3 && cp.Condition >= 0.8f);
+                if (remove)
+                {
+                    Pickup pu = cp.GetComponent<Pickup>();
+                    if (pu != null && !cp.Tire) pu.BRAKE2();
+                    PickupDoor pd = cp.GetComponent<PickupDoor>();
+                    if (pd != null) pd.BRAKE2();
+                    Destroy(cp.gameObject);
+                    continue;
+                }
+                if (cp.JunkSpawnChance == 4 && cp.Condition <= 0.4f && cp.OldMaterial != null)
+                {
+                    cp.Condition = 0.15f;
+                    cp.PartIsOld = true;
+                    Renderer r = cp.GetComponent<Renderer>();
+                    if (r != null) r.sharedMaterial = cp.OldMaterial;
+                }
+                if (cp.Tintable && !cp.RuinedMaterial) cp.Condition = 1f;
+                if (cp.CantRust && !cp.MeshLittleDamaged) cp.Condition = 1f;
+            }
+
+            mcp.ResetWheelControllers();
+
+            // rough start price: car price * average part condition
+            float sum = 0f; int count = 0;
+            foreach (CarProperties cp in car.GetComponentsInChildren<CarProperties>())
+                if (cp.SinglePart) { sum += cp.Condition; count++; }
+            mcp.CarPriceStart = count > 0 ? mcp.CarPrice * (sum / count) : 250f;
+        }
+
+        // ------------------------------------------------------------ MOD APP (noclip / money / save)
+        void DrawCheats(Rect scr)
+        {
+            DrawAppBar(scr, "Mod");
+
+            // noclip card with a switch
+            Rect c1 = new Rect(scr.x + 20f, scr.y + 96f, scr.width - 40f, 92f);
+            Round(c1, 24f, Card);
+            Text(new Rect(c1.x + 18f, c1.y + 16f, 170f, 26f), "Noclip", 18, Color.white, TextAnchor.MiddleLeft, FontStyle.Bold);
+            lbl.wordWrap = true;
+            Text(new Rect(c1.x + 18f, c1.y + 44f, 170f, 36f), "WASD, Space up, Ctrl down, Shift fast", 11, Muted, TextAnchor.UpperLeft);
+            lbl.wordWrap = false;
+            Rect sw = new Rect(c1.xMax - 18f - 56f, c1.y + 31f, 56f, 30f);
+            Round(sw, 15f, noclip ? Green : GreyBtn);
+            Round(new Rect(noclip ? sw.xMax - 27f : sw.x + 3f, sw.y + 3f, 24f, 24f), 12f, Color.white);
+            if (GUI.Button(new Rect(c1.x, c1.y, c1.width, c1.height), GUIContent.none, GUIStyle.none)) SetNoclip(!noclip);
+
+            // give money card
+            Rect c2 = new Rect(c1.x, c1.yMax + 12f, c1.width, 150f);
+            Round(c2, 24f, Card);
+            Text(new Rect(c2.x + 18f, c2.y + 10f, 200f, 24f), "Give money", 18, Color.white, TextAnchor.MiddleLeft, FontStyle.Bold);
+            float bw = (c2.width - 36f - 8f) / 2f;
+            float[] amounts = { 1000f, 10000f, 100000f, 1000000f };
+            for (int i = 0; i < 4; i++)
+            {
+                Rect b = new Rect(c2.x + 18f + (i % 2) * (bw + 8f), c2.y + 42f + (i / 2) * 52f, bw, 44f);
+                if (Button(b, "+$" + amounts[i].ToString("N0"), Blue, BlueHov, 14)) GiveMoney(amounts[i]);
+            }
+
+            // quick save card
+            Rect c3 = new Rect(c1.x, c2.yMax + 12f, c1.width, 130f);
+            Round(c3, 24f, Card);
+            Text(new Rect(c3.x + 18f, c3.y + 10f, 200f, 24f), "Quick save", 18, Color.white, TextAnchor.MiddleLeft, FontStyle.Bold);
+            if (Button(new Rect(c3.x + 18f, c3.y + 42f, c3.width - 36f, 46f), "Save now", Green, new Color32(74, 222, 128, 255), 15)) QuickSave();
+            Text(new Rect(c3.x + 18f, c3.y + 94f, c3.width - 36f, 22f), lastSave == "" ? "Not saved yet" : "Last save: " + lastSave, 12, Muted, TextAnchor.MiddleLeft);
+        }
+
+        void GiveMoney(float amount)
+        {
+            tools.money += amount;
+            PlayCashSound();
+            Toast("Mod", "+$" + amount.ToString("N0"), 2f);
+        }
+
+        void SetNoclip(bool on)
+        {
+            if (!FindPlayer()) { Toast("Mod", "Player not found", 2.5f); return; }
+            GameObject pl = player;
+
+            if (on)
+            {
+                if (PlayerInCar()) { Toast("Mod", "Get out of the car first", 2.5f); return; }
+                ncPlayer = pl.transform;
+                ncRb = pl.GetComponentInChildren<Rigidbody>();
+                ncCols.Clear();
+                foreach (Collider c in pl.GetComponentsInChildren<Collider>())
+                {
+                    if (c.enabled && !c.isTrigger) { c.enabled = false; ncCols.Add(c); }
+                }
+                if (ncRb != null)
+                {
+                    ncGravity = ncRb.useGravity;
+                    ncKinematic = ncRb.isKinematic;
+                    ncRb.useGravity = false;
+                    ncRb.isKinematic = true;
+                }
+                noclip = true;
+                Toast("Mod", "Noclip ON", 2f);
+            }
+            else
+            {
+                foreach (Collider c in ncCols) { if (c != null) c.enabled = true; }
+                ncCols.Clear();
+                if (ncRb != null)
+                {
+                    ncRb.isKinematic = ncKinematic;
+                    ncRb.useGravity = ncGravity;
+                    if (!ncRb.isKinematic) ncRb.velocity = Vector3.zero;
+                }
+                noclip = false;
+                Toast("Mod", "Noclip OFF", 2f);
+            }
+        }
+
+        void QuickSave()
+        {
+            try
+            {
+                tools t = FindPlayer() ? player.GetComponent<tools>() : null;
+                object saver = t != null ? t.saver : null;
+                if (saver == null) { Toast("Mod", "Saver not found", 3f); return; }
+
+                // call Saver.Save() by reflection (only if it needs no required arguments)
+                MethodInfo m = saver.GetType()
+                    .GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+                    .Where(x => x.Name == "Save" && x.GetParameters().All(pi => pi.IsOptional))
+                    .OrderBy(x => x.GetParameters().Length)
+                    .FirstOrDefault();
+                if (m == null) { Toast("Mod", "Saver.Save() needs arguments, check it in dnSpy", 4f); return; }
+
+                object[] args = m.GetParameters().Select(pi => pi.DefaultValue).ToArray();
+                m.Invoke(saver, args);
+                lastSave = DateTime.Now.ToString("HH:mm:ss");
+                Toast("Mod", "Game saved", 2.5f);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError("[PhoneMod] Quick save failed: " + ex);
+                Toast("Mod", "Save failed (see log)", 3f);
+            }
         }
 
         // ------------------------------------------------------------ BITCOIN APP
